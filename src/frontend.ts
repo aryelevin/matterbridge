@@ -22,25 +22,28 @@
  */
 
 // @matter
-import { EndpointServer, Logger, LogLevel as MatterLogLevel, LogFormat as MatterLogFormat } from '@matter/main';
+import { EndpointServer, Logger, LogLevel as MatterLogLevel, LogFormat as MatterLogFormat, Lifecycle } from '@matter/main';
 
 // Node modules
-import { Server as HttpServer, createServer, IncomingMessage } from 'http';
+import { Server as HttpServer, createServer, IncomingMessage } from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import https from 'https';
 import express from 'express';
 import WebSocket, { WebSocketServer } from 'ws';
-import os from 'os';
-import path from 'path';
-import { promises as fs } from 'fs';
+import multer from 'multer';
 
 // AnsiLogger module
-import { AnsiLogger, CYAN, db, debugStringify, er, LogLevel, nf, rs, stringify, TimestampFormat, UNDERLINE, UNDERLINEOFF, wr, YELLOW } from './logger/export.js';
+import { AnsiLogger, LogLevel, TimestampFormat, stringify, debugStringify, CYAN, db, er, nf, rs, UNDERLINE, UNDERLINEOFF, wr, YELLOW } from './logger/export.js';
 
 // Matterbridge
-import { createZip, deepCopy, getIntParameter, hasParameter, isValidNumber, isValidObject, isValidString } from './utils/utils.js';
+import { createZip, deepCopy, isValidArray, isValidNumber, isValidObject, isValidString } from './utils/export.js';
 import { ApiClusters, ApiDevices, BaseRegisteredPlugin, plg, RegisteredPlugin } from './matterbridgeTypes.js';
 import { Matterbridge } from './matterbridge.js';
 import { MatterbridgeEndpoint } from './matterbridgeEndpoint.js';
+import { hasParameter } from './utils/export.js';
+import { BridgedDeviceBasicInformation } from '@matter/main/clusters';
 
 /**
  * Websocket message ID for logging.
@@ -73,16 +76,49 @@ export const WS_ID_CPU_UPDATE = 3;
 export const WS_ID_MEMORY_UPDATE = 4;
 
 /**
- * Websocket message ID indicating a memory update.
+ * Websocket message ID indicating an uptime update.
  * @constant {number}
  */
-export const WS_ID_SNACKBAR = 5;
+export const WS_ID_UPTIME_UPDATE = 5;
 
 /**
- * Initializes the frontend of Matterbridge.
- *
- * @param port The port number to run the frontend server on. Default is 8283.
+ * Websocket message ID indicating a snackbar message.
+ * @constant {number}
  */
+export const WS_ID_SNACKBAR = 6;
+
+/**
+ * Websocket message ID indicating matterbridge has un update available.
+ * @constant {number}
+ */
+export const WS_ID_UPDATE_NEEDED = 7;
+
+/**
+ * Websocket message ID indicating a state update.
+ * @constant {number}
+ */
+export const WS_ID_STATEUPDATE = 8;
+
+/**
+ * Websocket message ID indicating a shelly system update.
+ * check:
+ * curl -k http://127.0.0.1:8101/api/updates/sys/check
+ * perform:
+ * curl -k http://127.0.0.1:8101/api/updates/sys/perform
+ * @constant {number}
+ */
+export const WS_ID_SHELLY_SYS_UPDATE = 100;
+
+/**
+ * Websocket message ID indicating a shelly main update.
+ * check:
+ * curl -k http://127.0.0.1:8101/api/updates/main/check
+ * perform:
+ * curl -k http://127.0.0.1:8101/api/updates/main/perform
+ * @constant {number}
+ */
+export const WS_ID_SHELLY_MAIN_UPDATE = 101;
+
 export class Frontend {
   private matterbridge: Matterbridge;
   private log: AnsiLogger;
@@ -112,6 +148,11 @@ export class Frontend {
   async start(port = 8283) {
     this.port = port;
     this.log.debug(`Initializing the frontend ${hasParameter('ssl') ? 'https' : 'http'} server on port ${YELLOW}${this.port}${db}`);
+
+    // Initialize multer with the upload directory
+    const uploadDir = path.join(this.matterbridge.matterbridgeDirectory, 'uploads');
+    await fs.mkdir(uploadDir, { recursive: true });
+    const upload = multer({ dest: uploadDir });
 
     // Create the express app that serves the frontend
     this.expressApp = express();
@@ -271,10 +312,18 @@ export class Frontend {
       this.log.error(`WebSocketServer error: ${error}`);
     });
 
-    // Start the memory dump interval
-    if (hasParameter('memorydump')) {
-      this.startCpuMemoryDump();
-    }
+    // Subscribe to cli events
+    const { cliEmitter } = await import('./cli.js');
+    cliEmitter.removeAllListeners();
+    cliEmitter.on('uptime', (systemUptime: string, processUptime: string) => {
+      this.wssSendUptimeUpdate(systemUptime, processUptime);
+    });
+    cliEmitter.on('memory', (totalMememory: string, freeMemory: string, rss: string, heapTotal: string, heapUsed: string, external: string, arrayBuffers: string) => {
+      this.wssSendMemoryUpdate(totalMememory, freeMemory, rss, heapTotal, heapUsed, external, arrayBuffers);
+    });
+    cliEmitter.on('cpu', (cpuUsage: number) => {
+      this.wssSendCpuUpdate(cpuUsage);
+    });
 
     // Endpoint to validate login code
     this.expressApp.post('/api/login', express.json(), async (req, res) => {
@@ -349,26 +398,8 @@ export class Frontend {
       interface ModuleWithCache {
         _cache: Record<string, unknown>;
       }
-      const { default: module } = await import('module');
+      const { default: module } = await import('node:module');
       const loadedModules = (module as unknown as ModuleWithCache)._cache ? Object.keys((module as unknown as ModuleWithCache)._cache).sort() : [];
-
-      /*
-      if (req.query.heapdump === 'true') {
-        const { default: heapdump } = await import('heapdump');
-        const filename = `heapdump-${Date.now()}.heapsnapshot`;
-
-        heapdump.writeSnapshot(filename, (err, dumpFilename) => {
-          if (err) {
-            this.log.error(`Heap dump error: ${err.message}`);
-            return res.status(500).json({ error: 'Heap dump failed', details: err.message });
-          }
-
-          this.log.info(`Heap dump written to ${dumpFilename}`);
-          return res.status(200).json({ ...memoryReport, heapdump: dumpFilename });
-        });
-        return; // Exit early since heapdump response is handled inside callback
-      }
-      */
 
       const memoryReport = {
         memoryUsage,
@@ -400,9 +431,7 @@ export class Frontend {
     // Endpoint to provide plugins
     this.expressApp.get('/api/plugins', async (req, res) => {
       this.log.debug('The frontend sent /api/plugins');
-      const response = this.getBaseRegisteredPlugins();
-      // this.log.debug('Response:', debugStringify(response));
-      res.json(response);
+      res.json(this.getBaseRegisteredPlugins());
     });
 
     // Endpoint to provide devices
@@ -411,7 +440,7 @@ export class Frontend {
       const devices: ApiDevices[] = [];
       this.matterbridge.devices.forEach(async (device) => {
         // Check if the device has the required properties
-        if (!device.plugin || !device.name || !device.deviceName || !device.serialNumber || !device.uniqueId) return;
+        if (!device.plugin || !device.name || !device.deviceName || !device.serialNumber || !device.uniqueId || !device.lifecycle.isReady) return;
         const cluster = this.getClusterTextFromDevice(device);
         devices.push({
           pluginName: device.plugin,
@@ -422,10 +451,10 @@ export class Frontend {
           productUrl: device.productUrl,
           configUrl: device.configUrl,
           uniqueId: device.uniqueId,
+          reachable: this.getReachability(device),
           cluster: cluster,
         });
       });
-      // this.log.debug('Response:', debugStringify(data));
       res.json(devices);
     });
 
@@ -542,6 +571,23 @@ export class Frontend {
       });
     });
 
+    // Endpoint to download the matter log
+    this.expressApp.get('/api/shellydownloadsystemlog', async (req, res) => {
+      this.log.debug('The frontend sent /api/shellydownloadsystemlog');
+      try {
+        await fs.access(path.join(this.matterbridge.matterbridgeDirectory, 'shelly.log'), fs.constants.F_OK);
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      } catch (error) {
+        fs.appendFile(path.join(this.matterbridge.matterbridgeDirectory, 'shelly.log'), 'Create the Shelly system log before downloading it.');
+      }
+      res.download(path.join(this.matterbridge.matterbridgeDirectory, 'shelly.log'), 'shelly.log', (error) => {
+        if (error) {
+          this.log.error(`Error downloading Shelly system log file: ${error instanceof Error ? error.message : error}`);
+          res.status(500).send('Error downloading Shelly system log file');
+        }
+      });
+    });
+
     // Endpoint to download the matter storage file
     this.expressApp.get('/api/download-mjstorage', async (req, res) => {
       this.log.debug('The frontend sent /api/download-mjstorage');
@@ -603,7 +649,7 @@ export class Frontend {
     });
 
     // Endpoint to receive commands
-    this.expressApp.post('/api/command/:command/:param', express.json(), async (req, res) => {
+    this.expressApp.post('/api/command/:command/:param', express.json(), async (req, res): Promise<void> => {
       const command = req.params.command;
       let param = req.params.param;
       this.log.debug(`The frontend sent /api/command/${command}/${param}`);
@@ -660,15 +706,7 @@ export class Frontend {
           this.log.logLevel = LogLevel.FATAL;
         }
         await this.matterbridge.nodeContext?.set('matterbridgeLogLevel', this.log.logLevel);
-        this.matterbridge.log.logLevel = this.log.logLevel;
-        MatterbridgeEndpoint.logLevel = this.log.logLevel;
-        this.matterbridge.devices.logLevel = this.log.logLevel;
-        this.matterbridge.plugins.logLevel = this.log.logLevel;
-        for (const plugin of this.matterbridge.plugins) {
-          if (!plugin.platform || !plugin.platform.config) continue;
-          plugin.platform.log.logLevel = (plugin.platform.config.debug as boolean) ? LogLevel.DEBUG : this.log.logLevel;
-          await plugin.platform.onChangeLoggerLevel((plugin.platform.config.debug as boolean) ? LogLevel.DEBUG : this.log.logLevel);
-        }
+        await this.matterbridge.setLogLevel(this.log.logLevel);
         res.json({ message: 'Command received' });
         return;
       }
@@ -841,8 +879,9 @@ export class Frontend {
           const plugin = this.matterbridge.plugins.get(param);
           if (!plugin) return;
           this.matterbridge.plugins.saveConfigFromJson(plugin, req.body);
+          this.wssSendSnackbarMessage(`Saved config for plugin ${param}`);
+          this.wssSendRestartRequired();
         }
-        this.wssSendRestartRequired();
         res.json({ message: 'Command received' });
         return;
       }
@@ -850,12 +889,15 @@ export class Frontend {
       if (command === 'installplugin') {
         param = param.replace(/\*/g, '\\');
         this.log.info(`Installing plugin ${plg}${param}${nf}...`);
+        this.wssSendSnackbarMessage(`Installing package ${param}. Please wait...`);
         try {
           await this.matterbridge.spawnCommand('npm', ['install', '-g', param, '--omit=dev', '--verbose']);
           this.log.info(`Plugin ${plg}${param}${nf} installed. Full restart required.`);
+          this.wssSendSnackbarMessage(`Installed package ${param}`, 10, 'success');
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
         } catch (error) {
           this.log.error(`Error installing plugin ${plg}${param}${er}`);
+          this.wssSendSnackbarMessage(`Package ${param} not installed`, 10, 'error');
         }
         this.wssSendRestartRequired();
         param = param.split('@')[0];
@@ -871,15 +913,17 @@ export class Frontend {
         param = param.replace(/\*/g, '\\');
         const plugin = await this.matterbridge.plugins.add(param);
         if (plugin) {
+          this.wssSendSnackbarMessage(`Added plugin ${param}`);
           if (this.matterbridge.bridgeMode === 'childbridge') {
             // We don't know now if the plugin is a dynamic platform or an accessory platform so we create the server node and the aggregator node
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             (this.matterbridge as any).createDynamicPlugin(plugin, true);
           }
-          this.matterbridge.plugins.load(plugin, true, 'The plugin has been added', true); // No await do it in the background
+          this.matterbridge.plugins.load(plugin, true, 'The plugin has been added', true).then(() => {
+            this.wssSendRefreshRequired('plugins');
+          });
         }
         res.json({ message: 'Command received' });
-        this.wssSendRefreshRequired();
         return;
       }
       // Handle the command removeplugin from Home
@@ -890,9 +934,10 @@ export class Frontend {
           const plugin = this.matterbridge.plugins.get(param) as RegisteredPlugin;
           await this.matterbridge.plugins.shutdown(plugin, 'The plugin has been removed.', true); // This will also close the server node in childbridge mode
           await this.matterbridge.plugins.remove(param);
+          this.wssSendSnackbarMessage(`Removed plugin ${param}`);
+          this.wssSendRefreshRequired('plugins');
         }
         res.json({ message: 'Command received' });
-        this.wssSendRefreshRequired();
         return;
       }
       // Handle the command enableplugin from Home
@@ -911,15 +956,17 @@ export class Frontend {
             plugin.registeredDevices = undefined;
             plugin.addedDevices = undefined;
             await this.matterbridge.plugins.enable(param);
+            this.wssSendSnackbarMessage(`Enabled plugin ${param}`);
             if (this.matterbridge.bridgeMode === 'childbridge' && plugin.type === 'DynamicPlatform') {
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               (this.matterbridge as any).createDynamicPlugin(plugin, true);
             }
-            this.matterbridge.plugins.load(plugin, true, 'The plugin has been enabled', true); // No await do it in the background since the server node is already started
+            this.matterbridge.plugins.load(plugin, true, 'The plugin has been enabled', true).then(() => {
+              this.wssSendRefreshRequired('plugins');
+            });
           }
         }
         res.json({ message: 'Command received' });
-        this.wssSendRefreshRequired();
         return;
       }
       // Handle the command disableplugin from Home
@@ -931,11 +978,46 @@ export class Frontend {
           if (plugin && plugin.enabled) {
             await this.matterbridge.plugins.shutdown(plugin, 'The plugin has been disabled.', true); // This will also close the server node in childbridge mode
             await this.matterbridge.plugins.disable(param);
+            this.wssSendSnackbarMessage(`Disabled plugin ${param}`);
+            this.wssSendRefreshRequired('plugins');
           }
         }
         res.json({ message: 'Command received' });
-        this.wssSendRefreshRequired();
         return;
+      }
+    });
+
+    this.expressApp.post('/api/uploadpackage', upload.single('file'), async (req, res) => {
+      const { filename } = req.body;
+      const file = req.file;
+
+      if (!file || !filename) {
+        this.log.error(`uploadpackage: invalid request: file and filename are required`);
+        res.status(400).send('Invalid request: file and filename are required');
+        return;
+      }
+      this.wssSendSnackbarMessage(`Installing package ${filename}. Please wait...`);
+
+      // Define the path where the plugin file will be saved
+      const filePath = path.join(this.matterbridge.matterbridgeDirectory, 'uploads', filename);
+
+      try {
+        // Move the uploaded file to the specified path
+        await fs.rename(file.path, filePath);
+        this.log.info(`File ${plg}${filename}${nf} uploaded successfully`);
+
+        // Install the plugin package
+        if (filename.endsWith('.tgz')) {
+          await this.matterbridge.spawnCommand('npm', ['install', '-g', filePath, '--omit=dev', '--verbose']);
+          this.log.info(`Plugin package ${plg}${filename}${nf} installed successfully. Full restart required.`);
+          this.wssSendSnackbarMessage(`Installed package ${filename}`, 10, 'success');
+          this.wssSendRestartRequired();
+          res.send(`Plugin package ${filename} uploaded and installed successfully`);
+        } else res.send(`File ${filename} uploaded successfully`);
+      } catch (err) {
+        this.log.error(`Error uploading or installing plugin package file ${plg}${filename}${er}:`, err);
+        this.wssSendSnackbarMessage(`Error uploading or installing plugin package ${filename}`, 10, 'error');
+        res.status(500).send(`Error uploading or installing plugin package ${filename}`);
       }
     });
 
@@ -950,21 +1032,8 @@ export class Frontend {
   }
 
   async stop() {
-    // Start the memory check. This will not allow the process to exit but will log the memory usage for 5 minutes.
-    if (hasParameter('memorycheck')) {
-      this.wssSendSnackbarMessage('Memory check started', getIntParameter('memorycheck') ?? 5 * 60 * 1000);
-      await new Promise<void>((resolve) => {
-        this.log.debug(`***Memory check started for ${getIntParameter('memorycheck') ?? 5 * 60 * 1000} ms`);
-        setTimeout(
-          () => {
-            this.wssSendSnackbarMessage('Memory check stopped', 10);
-            this.log.debug(`***Memory check stopped after ${getIntParameter('memorycheck') ?? 5 * 60 * 1000} ms`);
-            resolve();
-          },
-          getIntParameter('memorycheck') ?? 5 * 60 * 1000,
-        );
-      });
-    }
+    // Remove all listeners from the cliEmitter
+    // cliEmitter.removeAllListeners();
 
     // Close the http server
     if (this.httpServer) {
@@ -1006,11 +1075,6 @@ export class Frontend {
       });
       this.webSocketServer = undefined;
     }
-
-    // Stop the memory dump interval
-    if (hasParameter('memorydump')) {
-      this.stopCpuMemoryDump();
-    }
   }
 
   // Function to format bytes to KB, MB, or GB
@@ -1025,9 +1089,7 @@ export class Frontend {
   };
 
   // Function to format system uptime with only the most significant unit
-  private formatOsUpTime = (): string => {
-    const seconds = os.uptime();
-
+  private formatOsUpTime = (seconds: number): string => {
     if (seconds >= 86400) {
       const days = Math.floor(seconds / 86400);
       return `${days} day${days !== 1 ? 's' : ''}`;
@@ -1043,122 +1105,19 @@ export class Frontend {
     return `${seconds} second${seconds !== 1 ? 's' : ''}`;
   };
 
-  private getCpuUsage = () => {
-    const currCpus = os.cpus();
-    if (currCpus.length !== this.prevCpus.length) {
-      this.prevCpus = deepCopy(currCpus); // Reset the previous cpus
-      this.log.debug(`***Cpu usage reset. Current cpus: ${currCpus.length}. Previous cpus: ${this.prevCpus.length}.`);
-      return this.lastCpuUsage.toFixed(2);
-    }
-    let totalIdle = 0,
-      totalTick = 0;
-
-    // Get the cpu usage
-    this.prevCpus.forEach((prevCpu, i) => {
-      const currCpu = currCpus[i];
-
-      const idleDiff = currCpu.times.idle - prevCpu.times.idle;
-      const totalDiff = (Object.keys(currCpu.times) as (keyof typeof currCpu.times)[]).reduce((acc, key) => acc + (currCpu.times[key] - prevCpu.times[key]), 0);
-
-      totalIdle += idleDiff;
-      totalTick += totalDiff;
-    });
-    const cpuUsage = 100 - (totalIdle / totalTick) * 100;
-    if (totalTick === 0 || isNaN(cpuUsage) || !isFinite(cpuUsage) || cpuUsage <= 0) {
-      this.log.debug('***Invalid cpu usage. Returning the previous one.');
-      return this.lastCpuUsage.toFixed(2);
-    }
-    this.prevCpus = deepCopy(currCpus);
-    this.lastCpuUsage = cpuUsage;
-    return cpuUsage.toFixed(2);
-  };
-
-  private startCpuMemoryDump() {
-    clearInterval(this.memoryInterval);
-    clearTimeout(this.memoryTimeout);
-
-    const interval = () => {
-      // Get the cpu usage
-      const cpuUsage = this.getCpuUsage();
-
-      // Get the memory usage
-      const memoryUsageRaw = process.memoryUsage();
-      this.memoryData.push({ ...memoryUsageRaw, cpu: cpuUsage });
-      const memoryUsage = {
-        rss: this.formatMemoryUsage(memoryUsageRaw.rss),
-        heapTotal: this.formatMemoryUsage(memoryUsageRaw.heapTotal),
-        heapUsed: this.formatMemoryUsage(memoryUsageRaw.heapUsed),
-        external: this.formatMemoryUsage(memoryUsageRaw.external),
-        arrayBuffers: this.formatMemoryUsage(memoryUsageRaw.arrayBuffers),
-      };
-
-      this.log.debug(
-        `***Cpu usage: ${CYAN}${cpuUsage.padStart(6, ' ')} %${db} - Memory usage: rss ${CYAN}${memoryUsage.rss}${db} heapTotal ${CYAN}${memoryUsage.heapTotal}${db} heapUsed ${CYAN}${memoryUsage.heapUsed}${db} external ${memoryUsage.external} arrayBuffers ${memoryUsage.arrayBuffers}`,
-      );
-
-      // Update the system information
-      this.matterbridge.systemInformation.freeMemory = this.formatMemoryUsage(os.freemem());
-      this.matterbridge.systemInformation.totalMemory = this.formatMemoryUsage(os.totalmem());
-      this.matterbridge.systemInformation.systemUptime = this.formatOsUpTime();
-      this.matterbridge.systemInformation.cpuUsed = cpuUsage;
-      this.matterbridge.systemInformation.rss = this.formatMemoryUsage(process.memoryUsage().rss);
-      this.matterbridge.systemInformation.heapTotal = this.formatMemoryUsage(process.memoryUsage().heapTotal);
-      this.matterbridge.systemInformation.heapUsed = this.formatMemoryUsage(process.memoryUsage().heapUsed);
-
-      this.wssSendCpuUpdate(this.matterbridge.systemInformation.cpuUsed);
-      this.wssSendMemoryUpdate(
-        this.matterbridge.systemInformation.freeMemory,
-        this.matterbridge.systemInformation.totalMemory,
-        this.matterbridge.systemInformation.systemUptime,
-        this.matterbridge.systemInformation.rss,
-        this.matterbridge.systemInformation.heapUsed,
-        this.matterbridge.systemInformation.heapTotal,
-      );
-    };
-    interval();
-    this.memoryInterval = setInterval(interval, getIntParameter('memoryinterval') ?? 1000); // 1 second
-    this.memoryInterval.unref();
-    this.memoryTimeout = setTimeout(
-      () => {
-        this.stopCpuMemoryDump();
-      },
-      getIntParameter('memorytimeout') ?? 600000, // 10 minutes
-    );
-    this.memoryTimeout.unref();
-  }
-
-  private stopCpuMemoryDump() {
-    clearInterval(this.memoryInterval);
-    this.memoryInterval = undefined;
-    clearTimeout(this.memoryTimeout);
-    this.memoryTimeout = undefined;
-    for (const memory of this.memoryData) {
-      const memoryUsage = {
-        rss: this.formatMemoryUsage(memory.rss),
-        heapTotal: this.formatMemoryUsage(memory.heapTotal),
-        heapUsed: this.formatMemoryUsage(memory.heapUsed),
-        external: this.formatMemoryUsage(memory.external),
-        arrayBuffers: this.formatMemoryUsage(memory.arrayBuffers),
-      };
-      // eslint-disable-next-line no-console
-      console.log(
-        `${YELLOW}Cpu usage:${db} ${CYAN}${memory.cpu.padStart(6, ' ')} %${db} - ${YELLOW}Memory usage:${db} rss ${CYAN}${memoryUsage.rss}${db} heapTotal ${CYAN}${memoryUsage.heapTotal}${db} heapUsed ${CYAN}${memoryUsage.heapUsed}${db} external ${memoryUsage.external} arrayBuffers ${memoryUsage.arrayBuffers}${rs}`,
-      );
-    }
-    this.memoryData = [];
-    this.prevCpus = [];
-  }
-
   /**
    * Retrieves the api settings data.
    * @returns {Promise<object>} A promise that resolve in the api settings object.
    */
   private async getApiSettings() {
+    const { lastCpuUsage } = await import('./cli.js');
+
     // Update the system information
     this.matterbridge.systemInformation.totalMemory = this.formatMemoryUsage(os.totalmem());
     this.matterbridge.systemInformation.freeMemory = this.formatMemoryUsage(os.freemem());
-    this.matterbridge.systemInformation.systemUptime = this.formatOsUpTime();
-    this.matterbridge.systemInformation.cpuUsed = this.getCpuUsage();
+    this.matterbridge.systemInformation.systemUptime = this.formatOsUpTime(os.uptime());
+    this.matterbridge.systemInformation.processUptime = this.formatOsUpTime(Math.floor(process.uptime()));
+    this.matterbridge.systemInformation.cpuUsage = lastCpuUsage.toFixed(2) + ' %';
     this.matterbridge.systemInformation.rss = this.formatMemoryUsage(process.memoryUsage().rss);
     this.matterbridge.systemInformation.heapTotal = this.formatMemoryUsage(process.memoryUsage().heapTotal);
     this.matterbridge.systemInformation.heapUsed = this.formatMemoryUsage(process.memoryUsage().heapUsed);
@@ -1184,11 +1143,26 @@ export class Frontend {
   }
 
   /**
+   * Retrieves the reachable attribute.
+   * @param {MatterbridgeDevice} device - The MatterbridgeDevice object.
+   * @returns {boolean} The reachable attribute.
+   */
+  private getReachability(device: MatterbridgeEndpoint): boolean {
+    if (!device.lifecycle.isReady || device.construction.status !== Lifecycle.Status.Active) return false;
+
+    if (device.hasClusterServer(BridgedDeviceBasicInformation.Cluster.id)) return device.getAttribute(BridgedDeviceBasicInformation.Cluster.id, 'reachable') as boolean;
+    if (this.matterbridge.bridgeMode === 'childbridge') return true;
+    return false;
+  }
+
+  /**
    * Retrieves the cluster text description from a given device.
    * @param {MatterbridgeDevice} device - The MatterbridgeDevice object.
    * @returns {string} The attributes description of the cluster servers in the device.
    */
   private getClusterTextFromDevice(device: MatterbridgeEndpoint): string {
+    if (!device.lifecycle.isReady || device.construction.status !== Lifecycle.Status.Active) return '';
+
     const getAttribute = (device: MatterbridgeEndpoint, cluster: string, attribute: string) => {
       let value = undefined;
       Object.entries(device.state)
@@ -1305,15 +1279,16 @@ export class Frontend {
         manualPairingCode: plugin.manualPairingCode,
         configJson: plugin.configJson,
         schemaJson: plugin.schemaJson,
+        hasWhiteList: plugin.configJson?.whiteList !== undefined,
+        hasBlackList: plugin.configJson?.blackList !== undefined,
       });
     }
     return baseRegisteredPlugins;
   }
 
   /**
-   * Handles incoming websocket messages for the Matterbridge.
+   * Handles incoming websocket messages for the Matterbridge frontend.
    *
-   * @param {Matterbridge} this - The Matterbridge instance.
    * @param {WebSocket} client - The websocket client that sent the message.
    * @param {WebSocket.RawData} message - The raw data of the message received from the client.
    * @returns {Promise<void>} A promise that resolves when the message has been handled.
@@ -1353,13 +1328,24 @@ export class Frontend {
           client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, error: 'Wrong parameter packageName in /api/install' }));
           return;
         }
+        this.wssSendSnackbarMessage(`Installing package ${data.params.packageName}`);
         this.matterbridge
           .spawnCommand('npm', ['install', '-g', data.params.packageName, '--omit=dev', '--verbose'])
           .then((response) => {
             client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, response }));
+            this.wssSendSnackbarMessage(`Installed package ${data.params.packageName}`);
+            if (data.params.restart !== true) {
+              this.wssSendSnackbarMessage(`Restart required`, 0);
+            } else {
+              if (this.matterbridge.restartMode !== '') {
+                this.wssSendSnackbarMessage(`Restarting matterbridge...`, 0);
+                this.matterbridge.shutdownProcess();
+              } else this.wssSendSnackbarMessage(`Restart required`, 0);
+            }
           })
           .catch((error) => {
             client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, error: error instanceof Error ? error.message : error }));
+            this.wssSendSnackbarMessage(`Package ${data.params.packageName} not installed`);
           });
         return;
       } else if (data.method === '/api/uninstall') {
@@ -1367,6 +1353,7 @@ export class Frontend {
           client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, error: 'Wrong parameter packageName in /api/uninstall' }));
           return;
         }
+        this.wssSendSnackbarMessage(`Uninstalling package ${data.params.packageName}`);
         this.matterbridge
           .spawnCommand('npm', ['uninstall', '-g', data.params.packageName, '--verbose'])
           .then((response) => {
@@ -1374,17 +1361,54 @@ export class Frontend {
           })
           .catch((error) => {
             client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, error: error instanceof Error ? error.message : error }));
+            this.wssSendSnackbarMessage(`Uninstalled package ${data.params.packageName}`);
+            this.wssSendSnackbarMessage(`Restart required`, 0);
           });
         return;
+      } else if (data.method === '/api/shellysysupdate') {
+        const { triggerShellySysUpdate } = await import('./shelly.js');
+        triggerShellySysUpdate(this.matterbridge);
+        return;
+      } else if (data.method === '/api/shellymainupdate') {
+        const { triggerShellyMainUpdate } = await import('./shelly.js');
+        triggerShellyMainUpdate(this.matterbridge);
+        return;
+      } else if (data.method === '/api/shellycreatesystemlog') {
+        const { createShellySystemLog } = await import('./shelly.js');
+        createShellySystemLog(this.matterbridge);
+        return;
+      } else if (data.method === '/api/shellynetconfig') {
+        this.log.debug('/api/shellynetconfig:', data.params);
+        const { triggerShellyChangeIp: triggerShellyChangeNet } = await import('./shelly.js');
+        triggerShellyChangeNet(this.matterbridge, data.params as { type: 'static' | 'dhcp'; ip: string; subnet: string; gateway: string; dns: string });
+        return;
+      } else if (data.method === '/api/reboot') {
+        const { triggerShellyReboot } = await import('./shelly.js');
+        triggerShellyReboot(this.matterbridge);
+        return;
       } else if (data.method === '/api/restart') {
+        this.wssSendSnackbarMessage(`Restarting matterbridge...`, 0);
         await this.matterbridge.restartProcess();
         return;
       } else if (data.method === '/api/shutdown') {
+        this.wssSendSnackbarMessage(`Shutting down matterbridge...`, 0);
         await this.matterbridge.shutdownProcess();
         return;
       } else if (data.method === '/api/advertise') {
         const pairingCodes = await this.matterbridge.advertiseServerNode(this.matterbridge.serverNode);
+        this.matterbridge.matterbridgeInformation.matterbridgeAdvertise = true;
+        this.matterbridge.matterbridgeQrPairingCode = pairingCodes?.qrPairingCode;
+        this.matterbridge.matterbridgeManualPairingCode = pairingCodes?.manualPairingCode;
+        this.wssSendRefreshRequired('matterbridgeAdvertise');
+        this.wssSendSnackbarMessage(`Started fabrics share`, 0);
         client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, response: pairingCodes }));
+        return;
+      } else if (data.method === '/api/stopadvertise') {
+        await this.matterbridge.stopAdvertiseServerNode(this.matterbridge.serverNode);
+        this.matterbridge.matterbridgeInformation.matterbridgeAdvertise = false;
+        this.wssSendRefreshRequired('matterbridgeAdvertise');
+        this.wssSendSnackbarMessage(`Stopped fabrics share`, 0);
+        client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src }));
         return;
       } else if (data.method === '/api/settings') {
         client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, response: await this.getApiSettings() }));
@@ -1399,7 +1423,7 @@ export class Frontend {
           // Filter by pluginName if provided
           if (data.params.pluginName && data.params.pluginName !== device.plugin) return;
           // Check if the device has the required properties
-          if (!device.plugin || !device.name || !device.deviceName || !device.serialNumber || !device.uniqueId) return;
+          if (!device.plugin || !device.name || !device.deviceName || !device.serialNumber || !device.uniqueId || !device.lifecycle.isReady) return;
           const cluster = this.getClusterTextFromDevice(device);
           devices.push({
             pluginName: device.plugin,
@@ -1410,6 +1434,7 @@ export class Frontend {
             productUrl: device.productUrl,
             configUrl: device.configUrl,
             uniqueId: device.uniqueId,
+            reachable: this.getReachability(device),
             cluster: cluster,
           });
         });
@@ -1516,7 +1541,7 @@ export class Frontend {
         });
         client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, plugin: data.params.plugin, deviceName, serialNumber, endpoint: data.params.endpoint, deviceTypes, response: clusters }));
         return;
-      } else if (data.method === '/api/select') {
+      } else if (data.method === '/api/select' || data.method === '/api/select/devices') {
         if (!isValidString(data.params.plugin, 10)) {
           client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, error: 'Wrong parameter plugin in /api/select' }));
           return;
@@ -1526,7 +1551,8 @@ export class Frontend {
           client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, error: 'Plugin not found in /api/select' }));
           return;
         }
-        const selectDeviceValues = plugin.platform?.selectDevice ? Array.from(plugin.platform.selectDevice.values()).sort((keyA, keyB) => keyA.name.localeCompare(keyB.name)) : [];
+        // const selectDeviceValues = plugin.platform?.selectDevice ? Array.from(plugin.platform.selectDevice.values()).sort((keyA, keyB) => keyA.name.localeCompare(keyB.name)) : [];
+        const selectDeviceValues = plugin.platform?.getSelectDevices().sort((keyA, keyB) => keyA.name.localeCompare(keyB.name));
         client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, plugin: data.params.plugin, response: selectDeviceValues }));
         return;
       } else if (data.method === '/api/select/entities') {
@@ -1539,9 +1565,70 @@ export class Frontend {
           client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, error: 'Plugin not found in /api/select/entities' }));
           return;
         }
-        const selectEntityValues = plugin.platform?.selectDevice ? Array.from(plugin.platform.selectEntity.values()).sort((keyA, keyB) => keyA.name.localeCompare(keyB.name)) : [];
+        // const selectEntityValues = plugin.platform?.selectDevice ? Array.from(plugin.platform.selectEntity.values()).sort((keyA, keyB) => keyA.name.localeCompare(keyB.name)) : [];
+        const selectEntityValues = plugin.platform?.getSelectEntities().sort((keyA, keyB) => keyA.name.localeCompare(keyB.name));
         client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, plugin: data.params.plugin, response: selectEntityValues }));
         return;
+      } else if (data.method === '/api/command') {
+        if (!isValidString(data.params.command, 5)) {
+          client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, error: 'Wrong parameter command in /api/command' }));
+          return;
+        }
+        if (data.params.command === 'selectdevice' && isValidString(data.params.plugin, 10) && isValidString(data.params.serial, 1)) {
+          const plugin = this.matterbridge.plugins.get(data.params.plugin);
+          if (!plugin) {
+            client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, error: 'Plugin not found in /api/command' }));
+            return;
+          }
+          const config = plugin.configJson;
+          if (config) {
+            if (config.postfix) {
+              data.params.serial = data.params.serial.replace('-' + config.postfix, '');
+            }
+            // Add the serial to the whiteList if the whiteList exists and the serial is not already in it
+            if (isValidArray(config.whiteList, 1)) {
+              if (!config.whiteList.includes(data.params.serial)) {
+                config.whiteList.push(data.params.serial);
+              }
+            }
+            // Remove the serial from the blackList if the blackList exists and the serial is in it
+            if (isValidArray(config.blackList, 1)) {
+              if (config.blackList.includes(data.params.serial)) {
+                config.blackList = config.blackList.filter((serial) => serial !== data.params.serial);
+              }
+            }
+            if (plugin.platform) plugin.platform.config = config;
+            await this.matterbridge.plugins.saveConfigFromPlugin(plugin);
+            this.wssSendRestartRequired(false);
+          }
+        } else if (data.params.command === 'unselectdevice' && isValidString(data.params.plugin, 10) && isValidString(data.params.serial, 1)) {
+          const plugin = this.matterbridge.plugins.get(data.params.plugin);
+          if (!plugin) {
+            client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, error: 'Plugin not found in /api/command' }));
+            return;
+          }
+          const config = plugin.configJson;
+          if (config) {
+            if (config.postfix) {
+              data.params.serial = data.params.serial.replace('-' + config.postfix, '');
+            }
+            // Remove the serial from the whiteList if the whiteList exists and the serial is in it
+            if (isValidArray(config.whiteList, 1)) {
+              if (config.whiteList.includes(data.params.serial)) {
+                config.whiteList = config.whiteList.filter((serial) => serial !== data.params.serial);
+              }
+            }
+            // Add the serial to the blackList
+            if (isValidArray(config.blackList)) {
+              if (!config.blackList.includes(data.params.serial)) {
+                config.blackList.push(data.params.serial);
+              }
+            }
+            if (plugin.platform) plugin.platform.config = config;
+            await this.matterbridge.plugins.saveConfigFromPlugin(plugin);
+            this.wssSendRestartRequired(false);
+          }
+        }
       } else {
         this.log.error(`Invalid method from websocket client: ${debugStringify(data)}`);
         client.send(JSON.stringify({ id: data.id, method: data.method, src: 'Matterbridge', dst: data.src, error: 'Invalid method' }));
@@ -1603,14 +1690,25 @@ export class Frontend {
   /**
    * Sends a need to refresh WebSocket message to all connected clients.
    *
+   * @param {string} changed - The changed value. If null, the whole page will be refreshed.
+   * possible values:
+   * - 'matterbridgeLatestVersion'
+   * - 'matterbridgeAdvertise'
+   * - 'online'
+   * - 'offline'
+   * - 'reachability'
+   * - 'settings'
+   * - 'plugins'
+   * - 'devices'
+   * - 'fabrics'
+   * - 'sessions'
    */
-  wssSendRefreshRequired() {
+  wssSendRefreshRequired(changed: string | null = null) {
     this.log.debug('Sending a refresh required message to all connected clients');
-    this.matterbridge.matterbridgeInformation.refreshRequired = true;
     // Send the message to all connected clients
     this.webSocketServer?.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify({ id: WS_ID_REFRESH_NEEDED, src: 'Matterbridge', dst: 'Frontend', method: 'refresh_required', params: {} }));
+        client.send(JSON.stringify({ id: WS_ID_REFRESH_NEEDED, src: 'Matterbridge', dst: 'Frontend', method: 'refresh_required', params: { changed: changed } }));
       }
     });
   }
@@ -1619,9 +1717,10 @@ export class Frontend {
    * Sends a need to restart WebSocket message to all connected clients.
    *
    */
-  wssSendRestartRequired() {
+  wssSendRestartRequired(snackbar = true) {
     this.log.debug('Sending a restart required message to all connected clients');
     this.matterbridge.matterbridgeInformation.restartRequired = true;
+    if (snackbar === true) this.wssSendSnackbarMessage(`Restart required`, 0);
     // Send the message to all connected clients
     this.webSocketServer?.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
@@ -1631,31 +1730,30 @@ export class Frontend {
   }
 
   /**
+   * Sends a need to update WebSocket message to all connected clients.
+   *
+   */
+  wssSendUpdateRequired() {
+    this.log.debug('Sending an update required message to all connected clients');
+    this.matterbridge.matterbridgeInformation.updateRequired = true;
+    // Send the message to all connected clients
+    this.webSocketServer?.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({ id: WS_ID_UPDATE_NEEDED, src: 'Matterbridge', dst: 'Frontend', method: 'update_required', params: {} }));
+      }
+    });
+  }
+
+  /**
    * Sends a memory update message to all connected clients.
    *
    */
-  wssSendCpuUpdate(cpuUsed: string) {
-    this.log.debug('Sending a memory update message to all connected clients');
-    this.matterbridge.matterbridgeInformation.restartRequired = true;
-    // Send the message to all connected clients
-    this.webSocketServer?.clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify({ id: WS_ID_CPU_UPDATE, src: 'Matterbridge', dst: 'Frontend', method: 'cpu_update', params: { cpuUsed } }));
-      }
-    });
-  }
-
-  /**
-   * Sends a cpu update message to all connected clients.
-   *
-   */
-  wssSendMemoryUpdate(freeMemory: string, totalMemory: string, systemUptime: string, rss: string, heapUsed: string, heapTotal: string) {
+  wssSendCpuUpdate(cpuUsage: number) {
     this.log.debug('Sending a cpu update message to all connected clients');
-    this.matterbridge.matterbridgeInformation.restartRequired = true;
     // Send the message to all connected clients
     this.webSocketServer?.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify({ id: WS_ID_MEMORY_UPDATE, src: 'Matterbridge', dst: 'Frontend', method: 'memory_update', params: { freeMemory, totalMemory, systemUptime, rss, heapUsed, heapTotal } }));
+        client.send(JSON.stringify({ id: WS_ID_CPU_UPDATE, src: 'Matterbridge', dst: 'Frontend', method: 'cpu_update', params: { cpuUsage } }));
       }
     });
   }
@@ -1664,12 +1762,84 @@ export class Frontend {
    * Sends a cpu update message to all connected clients.
    *
    */
-  wssSendSnackbarMessage(message: string, timeout = 5) {
+  wssSendMemoryUpdate(totalMemory: string, freeMemory: string, rss: string, heapTotal: string, heapUsed: string, external: string, arrayBuffers: string) {
+    this.log.debug('Sending a memory update message to all connected clients');
+    // Send the message to all connected clients
+    this.webSocketServer?.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({ id: WS_ID_MEMORY_UPDATE, src: 'Matterbridge', dst: 'Frontend', method: 'memory_update', params: { totalMemory, freeMemory, rss, heapTotal, heapUsed, external, arrayBuffers } }));
+      }
+    });
+  }
+
+  /**
+   * Sends a memory update message to all connected clients.
+   *
+   */
+  wssSendUptimeUpdate(systemUptime: string, processUptime: string) {
+    this.log.debug('Sending a uptime update message to all connected clients');
+    // Send the message to all connected clients
+    this.webSocketServer?.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({ id: WS_ID_UPTIME_UPDATE, src: 'Matterbridge', dst: 'Frontend', method: 'uptime_update', params: { systemUptime, processUptime } }));
+      }
+    });
+  }
+
+  /**
+   * Sends a cpu update message to all connected clients.
+   * @param {string} message - The message to send.
+   * @param {number} timeout - The timeout in seconds for the snackbar message.
+   * @param {'info' | 'warning' | 'error' | 'success'} severity - The severity of the snackbar message (default info).
+   *
+   */
+  wssSendSnackbarMessage(message: string, timeout = 5, severity: 'info' | 'warning' | 'error' | 'success' = 'info') {
     this.log.debug('Sending a snackbar message to all connected clients');
     // Send the message to all connected clients
     this.webSocketServer?.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify({ id: WS_ID_SNACKBAR, src: 'Matterbridge', dst: 'Frontend', method: 'memory_update', params: { message, timeout } }));
+        client.send(JSON.stringify({ id: WS_ID_SNACKBAR, src: 'Matterbridge', dst: 'Frontend', method: 'memory_update', params: { message, timeout, severity } }));
+      }
+    });
+  }
+
+  /**
+   * Sends an attribute update message to all connected WebSocket clients.
+   *
+   * @param {string | undefined} plugin - The name of the plugin.
+   * @param {string | undefined} serialNumber - The serial number of the device.
+   * @param {string | undefined} uniqueId - The unique identifier of the device.
+   * @param {string} cluster - The cluster name where the attribute belongs.
+   * @param {string} attribute - The name of the attribute that changed.
+   * @param {number | string | boolean} value - The new value of the attribute.
+   *
+   * @remarks
+   * This method logs a debug message and sends a JSON-formatted message to all connected WebSocket clients
+   * with the updated attribute information.
+   */
+  wssSendAttributeChangedMessage(plugin: string | undefined, serialNumber: string | undefined, uniqueId: string | undefined, cluster: string, attribute: string, value: number | string | boolean) {
+    this.log.debug('Sending an attribute update message to all connected clients');
+    // Send the message to all connected clients
+    this.webSocketServer?.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({ id: WS_ID_STATEUPDATE, src: 'Matterbridge', dst: 'Frontend', method: 'state_update', params: { plugin, serialNumber, uniqueId, cluster, attribute, value } }));
+      }
+    });
+  }
+
+  /**
+   * Sends a message to all connected clients.
+   * @param {number} id - The message id.
+   * @param {string} method - The message method.
+   * @param {Record<string, string | number | boolean>} params - The message parameters.
+   *
+   */
+  wssBroadcastMessage(id: number, method?: string, params?: Record<string, string | number | boolean>) {
+    this.log.debug(`Sending a broadcast message id ${id} method ${method} params ${debugStringify(params ?? {})} to all connected clients`);
+    // Send the message to all connected clients
+    this.webSocketServer?.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({ id, src: 'Matterbridge', dst: 'Frontend', method, params }));
       }
     });
   }

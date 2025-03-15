@@ -1,7 +1,7 @@
 /* eslint-disable no-console */
 
 // React
-import React, { useState, useContext, useEffect } from 'react';
+import React, { useState, useContext, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 
 // @mui
@@ -15,18 +15,27 @@ import DownloadIcon from '@mui/icons-material/Download';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import AnnouncementOutlinedIcon from '@mui/icons-material/AnnouncementOutlined';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
+import IosShareIcon from '@mui/icons-material/IosShare';
+import BlockIcon from '@mui/icons-material/Block';
 
 // Frontend
 import { sendCommandToMatterbridge } from './sendApiCommand';
 import { UiContext } from './UiProvider';
-import { WebSocketContext } from './WebSocketProvider';
-import { debug } from '../App';
+import { WebSocketContext, WS_ID_SHELLY_SYS_UPDATE, WS_ID_SHELLY_MAIN_UPDATE } from './WebSocketProvider';
+import { debug, toggleDebug } from '../App';
 // const debug = true;
 
 function Header() {
+  // Contexts
   const { showSnackbarMessage, showConfirmCancelDialog } = useContext(UiContext);
-  const { online, sendMessage, logMessage, addListener, removeListener } = useContext(WebSocketContext);
-  const [settings, setSettings] = useState({});
+  const { online, sendMessage, logMessage, addListener, removeListener, getUniqueId } = useContext(WebSocketContext);
+  // States
+  const [restart, setRestart] = useState(false);
+  const [update, setUpdate] = useState(false);
+  const [settings, setSettings] = useState(null);
+  // Refs
+  const uniqueId = useRef(getUniqueId());
+  // Menu states
   const [menuAnchorEl, setMenuAnchorEl] = useState(null);
   const [backupMenuAnchorEl, setBackupMenuAnchorEl] = useState(null);
   const [downloadMenuAnchorEl, setDownloadMenuAnchorEl] = useState(null);
@@ -45,26 +54,56 @@ function Header() {
   };
 
   const handleUpdateClick = () => {
-    logMessage('Matterbridge', `Updating matterbridge...`);
-    showSnackbarMessage('Updating matterbridge...', 30);
-    sendCommandToMatterbridge('update', 'now');
+    sendMessage({ id: uniqueId.current, method: "/api/install", src: "Frontend", dst: "Matterbridge", params: { packageName: 'matterbridge', restart: true } });
   };
 
+  const handleShellySystemUpdateClick = () => {
+    if(debug) console.log('Header: handleShellySystemUpdateClick');
+    logMessage('Matterbridge', `Installing system updates...`);
+    sendMessage({ id: uniqueId.current, method: "/api/shellysysupdate", src: "Frontend", dst: "Matterbridge", params: { } });
+  };
+
+  const handleShellyMainUpdateClick = () => {
+    if(debug) console.log('Header: handleShellyMainUpdateClick');
+    logMessage('Matterbridge', `Installing software updates...`);
+    sendMessage({ id: uniqueId.current, method: "/api/shellymainupdate", src: "Frontend", dst: "Matterbridge", params: { } });
+  };
+
+  const handleShellyCreateSystemLog = () => {
+    if(debug) console.log('Header: handleShellyCreateSystemLog');
+    sendMessage({ id: uniqueId.current, method: "/api/shellycreatesystemlog", src: "Frontend", dst: "Matterbridge", params: { } });
+  };
+
+  const handleShellyDownloadSystemLog = () => {
+    if(debug) console.log('Header: handleShellyDownloadSystemLog');
+    logMessage('Matterbridge', `Downloading Shelly system log...`);
+    showSnackbarMessage('Downloading Shelly system log...', 5);
+    window.location.href = './api/shellydownloadsystemlog';
+};
+
   const handleRestartClick = () => {
-    logMessage('Matterbridge', `Restarting matterbridge...`);
-    showSnackbarMessage('Restarting matterbridge...', 10);
     if (settings.matterbridgeInformation.restartMode === '') {
-      sendCommandToMatterbridge('restart', 'now');
+      sendMessage({ id: uniqueId.current, method: "/api/restart", src: "Frontend", dst: "Matterbridge", params: {} });
     }
     else {
-      sendCommandToMatterbridge('shutdown', 'now');
+      sendMessage({ id: uniqueId.current, method: "/api/shutdown", src: "Frontend", dst: "Matterbridge", params: {} });
     }
   };
 
   const handleShutdownClick = () => {
-    logMessage('Matterbridge', `Shutting down matterbridge...`);
-    showSnackbarMessage('Shutting down matterbridge...', 10);
-    sendCommandToMatterbridge('shutdown', 'now');
+    sendMessage({ id: uniqueId.current, method: "/api/shutdown", src: "Frontend", dst: "Matterbridge", params: {} });
+  };
+
+  const handleRebootClick = () => {
+    sendMessage({ id: uniqueId.current, method: "/api/reboot", src: "Frontend", dst: "Matterbridge", params: {} });
+  };
+
+  const handleStartAdvertiseClick = () => {
+    sendMessage({ id: uniqueId.current, method: "/api/advertise", src: "Frontend", dst: "Matterbridge", params: {} });
+  };
+
+  const handleStopAdvertiseClick = () => {
+    sendMessage({ id: uniqueId.current, method: "/api/stopadvertise", src: "Frontend", dst: "Matterbridge", params: {} });
   };
 
   const handleMenuOpen = (event) => {
@@ -96,10 +135,24 @@ function Header() {
       window.location.href = './api/download-backup';
     } else if (value === 'update') {
       handleUpdateClick();
+    } else if (value === 'shelly-sys-update') {
+      handleShellySystemUpdateClick();
+    } else if (value === 'shelly-main-update') {
+      handleShellyMainUpdateClick();
+    } else if (value === 'shelly-create-system-log') {
+      handleShellyCreateSystemLog();
+    } else if (value === 'shelly-download-system-log') {
+      handleShellyDownloadSystemLog(); 
     } else if (value === 'restart') {
       handleRestartClick();
     } else if (value === 'shutdown') {
       handleShutdownClick();
+    } else if (value === 'reboot') {
+      handleRebootClick();
+    } else if (value === 'startshare') {
+      handleStartAdvertiseClick();
+    } else if (value === 'stopshare') {
+      handleStopAdvertiseClick();
     } else if (value === 'create-backup') {
       logMessage('Matterbridge', `Creating backup...`);
       showSnackbarMessage('Creating backup...', 10);
@@ -150,44 +203,72 @@ function Header() {
 
   useEffect(() => {
     const handleWebSocketMessage = (msg) => {
-      /*Header listener*/
-      if (debug) console.log('Header received WebSocket Message:', msg);
+      /* Header listener */
+      // if (debug) console.log(`Header received WebSocket Message id ${msg.id}:`, msg);
       if (msg.src === 'Matterbridge' && msg.dst === 'Frontend') {
-        if (msg.method === 'refresh_required') {
-          if (debug) console.log('Header received refresh_required');
-          sendMessage({ method: "/api/settings", src: "Frontend", dst: "Matterbridge", params: {} });
-        }
-        if (msg.method === '/api/settings') {
+        // Local messages
+        if (msg.id === uniqueId.current && msg.method === '/api/settings') {
           if (debug) console.log('Header received settings:', msg.response);
           setSettings(msg.response);
+          setRestart(msg.response.matterbridgeInformation.restartRequired);
+          setUpdate(msg.response.matterbridgeInformation.updateRequired);
+        }
+        // Broadcast messages
+        if (msg.method === 'refresh_required') {
+          if (msg.params.changed === null || msg.params.changed === 'matterbridgeLatestVersion' || msg.params.changed === 'fabrics') {
+            if (debug) console.log(`Header received refresh_required: changed=${msg.params.changed}`);
+            sendMessage({ id: uniqueId.current, method: "/api/settings", src: "Frontend", dst: "Matterbridge", params: {} });
+          }
+        }
+        if (msg.method === 'restart_required') {
+          if (debug) console.log('Header received restart_required');
+          setRestart(true);
+        }
+        if (msg.method === 'update_required') {
+          if (debug) console.log('Header received update_required');
+          setUpdate(true);
+        }
+        if (msg.id === WS_ID_SHELLY_SYS_UPDATE) {
+          if (debug) console.log('Header received WS_ID_SHELLY_SYS_UPDATE:');
+          setSettings(prevSettings => ({ ...prevSettings, matterbridgeInformation: { ...prevSettings.matterbridgeInformation, shellySysUpdate: msg.params.available } }));
+
+        }
+        if (msg.id === WS_ID_SHELLY_MAIN_UPDATE) {
+          if (debug) console.log('Header received WS_ID_SHELLY_MAIN_UPDATE:');
+          setSettings(prevSettings => ({ ...prevSettings, matterbridgeInformation: { ...prevSettings.matterbridgeInformation, shellyMainUpdate: msg.params.available } }));
         }
       }
     };
 
     addListener(handleWebSocketMessage);
-    if (debug) console.log('Header added WebSocket listener');
+    if (debug) console.log(`Header added WebSocket listener id ${uniqueId.current}`);
 
     return () => {
       removeListener(handleWebSocketMessage);
-      if (debug) console.log('Header removed WebSocket listener');
+      if (debug) console.log(`Header removed WebSocket listener`);
     };
-  }, [addListener, removeListener, sendMessage]);
+  }, [addListener, removeListener, sendMessage, showSnackbarMessage]);
 
   useEffect(() => {
     if (online) {
       if (debug) console.log('Header sending /api/settings requests');
-      sendMessage({ method: "/api/settings", src: "Frontend", dst: "Matterbridge", params: {} });
+      sendMessage({ id: uniqueId.current, method: "/api/settings", src: "Frontend", dst: "Matterbridge", params: {} });
     }
   }, [online, sendMessage]);
 
+  const handleLogoClick = () => {
+    toggleDebug();
+    if (debug) console.log('Matterbridge logo clicked: debug is now', debug);
+  };
+
   if(debug) console.log('Header rendering...');
-  if (!online || settings.matterbridgeInformation === undefined) {
+  if (!online || !settings) {
     return null;
   }
   return (
     <div className="header">
       <div className="sub-header">
-        <img src="matterbridge 64x64.png" alt="Matterbridge Logo" style={{ height: '30px' }} />
+        <img src="matterbridge.svg" alt="Matterbridge Logo" style={{ height: '30px' }} onClick={handleLogoClick}/>
         <h2 style={{ fontSize: '22px', color: 'var(--main-icon-color)', margin: '0px' }}>Matterbridge</h2>
         <nav>
           <Link to="/" className="nav-link">Home</Link>
@@ -197,29 +278,41 @@ function Header() {
         </nav>
       </div>
       <div className="sub-header">
-        <Tooltip title="Matterbridge status">
-          {online ? <span className="status-enabled" style={{ cursor: 'default' }}>Online</span> : <span className="status-disabled" style={{ cursor: 'default' }}>Offline</span>}
-        </Tooltip>
         {settings.matterbridgeInformation && !settings.matterbridgeInformation.readOnly &&
           <Tooltip title="Sponsor Matterbridge and its plugins">
             <span className="status-sponsor" onClick={handleSponsorClick}>Sponsor</span>
           </Tooltip>
         }
-        {settings.matterbridgeInformation.matterbridgeLatestVersion === undefined || settings.matterbridgeInformation.matterbridgeVersion === settings.matterbridgeInformation.matterbridgeLatestVersion || settings.matterbridgeInformation.readOnly ?
-          <Tooltip title="Matterbridge version"><span className="status-information" onClick={handleChangelogClick}>v.{settings.matterbridgeInformation.matterbridgeVersion}</span></Tooltip> :
-          <Tooltip title="New Matterbridge version available, click to install"><span className="status-warning" onClick={handleUpdateClick}>Update v.{settings.matterbridgeInformation.matterbridgeVersion} to v.{settings.matterbridgeInformation.matterbridgeLatestVersion}</span></Tooltip>
-        }
-        {settings.matterbridgeInformation.edge === true ? (
-          <Tooltip title="Edge mode">
-            <span className="status-information" style={{ cursor: 'default' }}>edge</span>
+        {!settings.matterbridgeInformation.readOnly && !update &&
+          <Tooltip title="Matterbridge version">
+            <span className="status-information" onClick={handleChangelogClick}>
+              v.{settings.matterbridgeInformation.matterbridgeVersion}
+            </span>
           </Tooltip>
-        ) : null}
-        {settings.matterbridgeInformation.bridgeMode !== '' ? (
+        }
+        {!settings.matterbridgeInformation.readOnly && update &&
+          <Tooltip title="New Matterbridge version available, click to install">
+            <span className="status-warning" onClick={handleUpdateClick}>
+              Update v.{settings.matterbridgeInformation.matterbridgeVersion} to v.{settings.matterbridgeInformation.matterbridgeLatestVersion}
+            </span>
+          </Tooltip>
+        }
+        {settings.matterbridgeInformation.shellyBoard &&
+          <img src="Shelly.svg" alt="Shelly Icon" style={{ height: '30px', padding: '0px', margin: '0px', marginRight: '30px' }}/>
+        }
+        {settings.matterbridgeInformation.shellyBoard && settings.matterbridgeInformation.xxxmatterbridgeVersion &&
+          <Tooltip title="Matterbridge version">
+            <span style={{ fontSize: '12px', color: 'var(--main-icon-color)' }} onClick={handleChangelogClick}>
+              v.{settings.matterbridgeInformation.matterbridgeVersion}
+            </span>
+          </Tooltip>
+        }
+        {settings.matterbridgeInformation.bridgeMode !== '' && settings.matterbridgeInformation.readOnly === false ? (
           <Tooltip title="Bridge mode">
             <span className="status-information" style={{ cursor: 'default' }}>{settings.matterbridgeInformation.bridgeMode}</span>
           </Tooltip>
         ) : null}
-        {settings.matterbridgeInformation.restartMode !== '' ? (
+        {settings.matterbridgeInformation.restartMode !== '' && settings.matterbridgeInformation.readOnly === false ? (
           <Tooltip title="Restart mode">
             <span className="status-information" style={{ cursor: 'default' }}>{settings.matterbridgeInformation.restartMode}</span>
           </Tooltip>
@@ -238,19 +331,33 @@ function Header() {
         </Tooltip>
         {settings.matterbridgeInformation && !settings.matterbridgeInformation.readOnly &&
           <Tooltip title="Update matterbridge">
-            <IconButton onClick={handleUpdateClick}>
+            <IconButton style={{ color: update ? 'var(--primary-color)' : undefined }} onClick={handleUpdateClick}>
+              <SystemUpdateAltIcon />
+            </IconButton>
+          </Tooltip>
+        }
+        {settings.matterbridgeInformation && settings.matterbridgeInformation.shellyBoard && settings.matterbridgeInformation.shellySysUpdate &&
+          <Tooltip title="Shelly system update">
+            <IconButton style={{ color: 'var(--primary-color)' }} onClick={handleShellySystemUpdateClick}>
+              <SystemUpdateAltIcon />
+            </IconButton>
+          </Tooltip>
+        }
+        {settings.matterbridgeInformation && settings.matterbridgeInformation.shellyBoard && settings.matterbridgeInformation.shellyMainUpdate &&
+          <Tooltip title="Shelly software update">
+            <IconButton style={{ color: 'var(--primary-color)' }} onClick={handleShellyMainUpdateClick}>
               <SystemUpdateAltIcon />
             </IconButton>
           </Tooltip>
         }
         <Tooltip title="Restart matterbridge">
-          <IconButton onClick={handleRestartClick}>
+          <IconButton style={{ color: restart ? 'var(--primary-color)' : undefined }} onClick={handleRestartClick}>
             <RestartAltIcon />
           </IconButton>
         </Tooltip>
         {settings.matterbridgeInformation.restartMode === '' ? (
           <Tooltip title="Shut down matterbridge">
-            <IconButton onClick={handleShutdownClick}>
+            <IconButton style={{ color: restart ? 'var(--primary-color)' : '' }} onClick={handleShutdownClick}>
               <PowerSettingsNewIcon />
             </IconButton>
           </Tooltip>
@@ -261,10 +368,22 @@ function Header() {
           </IconButton>
         </Tooltip>
         <Menu id="command-menu" anchorEl={menuAnchorEl} keepMounted open={Boolean(menuAnchorEl)} onClose={() => handleMenuCloseConfirm('')} >
-          {settings.matterbridgeInformation && !settings.matterbridgeInformation.readOnly &&
+        {settings.matterbridgeInformation && !settings.matterbridgeInformation.readOnly &&
             <MenuItem onClick={() => handleMenuCloseConfirm('update')}>
               <ListItemIcon><SystemUpdateAltIcon style={{ color: 'var(--main-icon-color)' }} /></ListItemIcon>
               <ListItemText primary="Update" />
+            </MenuItem>
+          }
+          {settings.matterbridgeInformation && settings.matterbridgeInformation.shellyBoard && settings.matterbridgeInformation.shellySysUpdate &&
+            <MenuItem onClick={() => handleMenuCloseConfirm('shelly-sys-update')}>
+              <ListItemIcon><SystemUpdateAltIcon style={{ color: 'var(--main-icon-color)' }} /></ListItemIcon>
+              <ListItemText primary="Shelly system update" />
+            </MenuItem>
+          }
+          {settings.matterbridgeInformation && settings.matterbridgeInformation.shellyBoard && settings.matterbridgeInformation.shellyMainUpdate &&
+            <MenuItem onClick={() => handleMenuCloseConfirm('shelly-main-update')}>
+              <ListItemIcon><SystemUpdateAltIcon style={{ color: 'var(--main-icon-color)' }} /></ListItemIcon>
+              <ListItemText primary="Shelly software update" />
             </MenuItem>
           }
           <MenuItem onClick={() => handleMenuCloseConfirm('restart')}>
@@ -275,6 +394,24 @@ function Header() {
             <MenuItem onClick={() => handleMenuCloseConfirm('shutdown')}>
               <ListItemIcon><PowerSettingsNewIcon style={{ color: 'var(--main-icon-color)' }} /></ListItemIcon>
               <ListItemText primary="Shutdown" />
+            </MenuItem>
+            : null}
+          {settings.matterbridgeInformation && settings.matterbridgeInformation.shellyBoard &&
+            <MenuItem onClick={() => { showConfirmCancelDialog('Reboot', 'Are you sure you want to reboot the Shelly board?', 'reboot', handleMenuCloseConfirm, handleMenuCloseCancel); }}>
+              <ListItemIcon><RestartAltIcon style={{ color: 'var(--main-icon-color)' }} /></ListItemIcon>
+              <ListItemText primary="Reboot" />
+            </MenuItem>
+          }
+          {settings.matterbridgeInformation.matterbridgePaired === true && settings.matterbridgeInformation.matterbridgeAdvertise === false ?
+            <MenuItem onClick={() => handleMenuCloseConfirm('startshare')}>
+              <ListItemIcon><IosShareIcon style={{ color: 'var(--main-icon-color)' }} /></ListItemIcon>
+              <ListItemText primary="Share fabrics" />
+            </MenuItem>
+            : null}
+          {settings.matterbridgeInformation.matterbridgeAdvertise === true ?
+            <MenuItem onClick={() => handleMenuCloseConfirm('stopshare')}>
+              <ListItemIcon><BlockIcon style={{ color: 'var(--main-icon-color)' }} /></ListItemIcon>
+              <ListItemText primary="Stop sharing" />
             </MenuItem>
             : null}
           <Divider />
@@ -299,6 +436,20 @@ function Header() {
               <ListItemIcon><DownloadIcon style={{ color: 'var(--main-icon-color)' }} /></ListItemIcon>
               <ListItemText primary="Matter storage" />
             </MenuItem>
+
+            {settings.matterbridgeInformation && settings.matterbridgeInformation.shellyBoard &&
+              <MenuItem onClick={() => { handleMenuCloseConfirm('shelly-create-system-log'); handleDownloadMenuClose(); }}>
+                <ListItemIcon><DownloadIcon style={{ color: 'var(--main-icon-color)' }} /></ListItemIcon>
+                <ListItemText primary="Create Shelly system log" />
+              </MenuItem>
+            }
+            {settings.matterbridgeInformation && settings.matterbridgeInformation.shellyBoard &&
+              <MenuItem onClick={() => { handleMenuCloseConfirm('shelly-download-system-log'); handleDownloadMenuClose(); }}>
+                <ListItemIcon><DownloadIcon style={{ color: 'var(--main-icon-color)' }} /></ListItemIcon>
+                <ListItemText primary="Download Shelly system log" />
+              </MenuItem>
+            }
+
           </Menu>
 
           <Divider />
@@ -331,10 +482,12 @@ function Header() {
               <ListItemIcon><PowerSettingsNewIcon style={{ color: 'var(--main-icon-color)' }} /></ListItemIcon>
               <ListItemText primary="Reset commissioning..." />
             </MenuItem>
-            <MenuItem onClick={() => { handleResetMenuClose(); showConfirmCancelDialog('Factory reset and shutdown', 'Are you sure you want to factory reset Matterbridge? You will have to manually remove Matterbridge from the controller.', 'factoryreset', handleMenuCloseConfirm, handleMenuCloseCancel); }}>
-              <ListItemIcon><PowerSettingsNewIcon style={{ color: 'var(--main-icon-color)' }} /></ListItemIcon>
-              <ListItemText primary="Factory reset..." />
-            </MenuItem>
+            {!settings.matterbridgeInformation.readOnly &&
+              <MenuItem onClick={() => { handleResetMenuClose(); showConfirmCancelDialog('Factory reset and shutdown', 'Are you sure you want to factory reset Matterbridge? You will have to manually remove Matterbridge from the controller.', 'factoryreset', handleMenuCloseConfirm, handleMenuCloseCancel); }}>
+                <ListItemIcon><PowerSettingsNewIcon style={{ color: 'var(--main-icon-color)' }} /></ListItemIcon>
+                <ListItemText primary="Factory reset..." />
+              </MenuItem>
+            }
           </Menu>
 
         </Menu>

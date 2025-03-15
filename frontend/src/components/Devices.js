@@ -1,3 +1,4 @@
+/* eslint-disable no-console */
 // React
 import React, { useContext, useEffect, useState } from 'react';
 import { useTable, useSortBy } from 'react-table';
@@ -21,6 +22,10 @@ import Box from '@mui/material/Box';
 import SettingsIcon from '@mui/icons-material/Settings';
 import TableViewIcon from '@mui/icons-material/TableView';
 import ViewModuleIcon from '@mui/icons-material/ViewModule';
+
+// @mdi/js
+import Icon from '@mdi/react';
+import { mdiSortAscending, mdiSortDescending } from '@mdi/js';
 
 // Frontend
 import { WebSocketContext } from './WebSocketProvider';
@@ -54,7 +59,7 @@ const devicesColumns = [
     accessor: 'uniqueId',
   },
   {
-    Header: 'Config Url',
+    Header: 'Url',
     accessor: 'configUrl',
   },
   {
@@ -62,14 +67,15 @@ const devicesColumns = [
     accessor: 'configButton',
     noSort: true,
     Cell: ({ row }) => (
+      row.original.configUrl ? (
       <IconButton
         onClick={() => window.open(row.original.configUrl, '_blank')}
         aria-label="Open Config"
-        disabled={!row.original.configUrl}
         sx={{ margin: 0, padding: 0 }}
       >
-        <SettingsIcon />
+        <SettingsIcon fontSize="small"/>
       </IconButton>
+      ) : null
     ),
   },
   {
@@ -163,16 +169,16 @@ function DevicesTable({ data, columnVisibility, setPlugin, setEndpoint, setDevic
         {headerGroups.map(headerGroup => (
           <tr {...headerGroup.getHeaderGroupProps()}>
             {headerGroup.headers.map(column => (
-              <th {...column.getHeaderProps({ ...column.getSortByToggleProps(), title: '' })}>
+              <th {...column.getHeaderProps(column.noSort ? undefined : column.getSortByToggleProps())}>
                 {column.render('Header')}
                 {/* Add a sort direction indicator */}
                 {!column.noSort && (
-                  <span>
+                  <span style={{ margin: '0px', marginLeft: '5px', padding: '0px' }}>
                     {column.isSorted
                       ? column.isSortedDesc
-                        ? ' 🔽'
-                        : ' 🔼'
-                      : '🔽🔼'}
+                        ? <Icon path={mdiSortDescending} size='15px'/>
+                        : <Icon path={mdiSortAscending} size='15px'/>
+                    : null}
                   </span>
                 )}
               </th>
@@ -444,7 +450,7 @@ function Devices() {
             value={filter}
             onChange={handleFilterChange}
             placeholder="Enter the device name or serial number"
-            sx={{ width: '300px' }}
+            sx={{ width: '320px' }}
             InputProps={{
               style: {
                 backgroundColor: 'var(--main-bg-color)',
@@ -561,7 +567,7 @@ function Devices() {
         </div>
       )}
 
-      {/* Clusters Table */}
+      {/* Icon View mode*/}
       {viewMode === 'icon' && (
         <DevicesIcons filter={filter} devices={filteredDevices} />
       )}

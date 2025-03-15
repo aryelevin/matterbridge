@@ -1,3 +1,6 @@
+ 
+/* eslint-disable react-hooks/exhaustive-deps */
+/* eslint-disable no-console */
 // React
 import React, { useState, useCallback, useMemo, createContext, useRef } from 'react';
 
@@ -8,9 +11,8 @@ import CloseIcon from '@mui/icons-material/Close';
 
 // Local modules
 import { ConfirmCancelForm } from './ConfirmCancelForm';
-// import { debug } from '../App';
-
-const debug = true;
+import { debug } from '../App';
+// const debug = true;
 
 export const UiContext = createContext();
 
@@ -18,7 +20,7 @@ export function UiProvider({ children }) {
   // Snackbar
   const { enqueueSnackbar, closeSnackbar } = useSnackbar();
 
-  const showSnackbarMessage = useCallback((message, timeout, variant) => {
+  const showSnackbarMessage = useCallback((message, timeout, severity) => {
     // default | error | success | warning | info
     if(debug) console.log(`UiProvider showSnackbarMessage: message ${message} timeout ${timeout}`);
     enqueueSnackbar(message, { 
@@ -27,18 +29,18 @@ export function UiProvider({ children }) {
       persist: timeout === 0,
       dense: true,
       content: (key) => (
-        <Box key={key} sx={{ width: '300px', marginRight: '30px' }}> 
+        <Box key={key} sx={{ margin: '0', padding: '0', width: '300px', marginRight: '30px' }}> 
           <Alert
             key={key}
-            severity="info"
+            severity={severity ?? "info"}
             variant="filled"
             sx={{
-              backgroundColor: 'var(--primary-color)',
+              // backgroundColor: 'var(--primary-color)',
               color: '#fff',
               fontWeight: 'normal',
               width: '100%',
               cursor: 'pointer', 
-
+              padding: '2px 10px',
             }}
             onClick={() => closeSnackbar(key)}
             action={

@@ -1,9 +1,12 @@
+/* eslint-disable react-hooks/exhaustive-deps */
+/* eslint-disable no-console */
 // React
 import React, { useEffect, useRef, useState, useCallback, useMemo, createContext, useContext } from 'react';
 
 // Local modules
 import { UiContext } from './UiProvider';
 import { debug } from '../App';
+// const debug = true;
 
 /**
  * Websocket message IDs taken from frontend.ts
@@ -13,7 +16,12 @@ export const WS_ID_REFRESH_NEEDED = 1;
 export const WS_ID_RESTART_NEEDED = 2;
 export const WS_ID_CPU_UPDATE = 3;
 export const WS_ID_MEMORY_UPDATE = 4;
-export const WS_ID_SNACKBAR = 5;
+export const WS_ID_UPTIME_UPDATE = 5;
+export const WS_ID_SNACKBAR = 6;
+export const WS_ID_UPDATE_NEEDED = 7;
+export const WS_ID_STATEUPDATE = 8;
+export const WS_ID_SHELLY_SYS_UPDATE = 100;
+export const WS_ID_SHELLY_MAIN_UPDATE = 101;
 
 export const WebSocketMessagesContext = createContext(); // messages
 export const WebSocketContext = createContext(); // , setMessages, sendMessage, logMessage, setLogFilters, online, addListener, removeListener
@@ -23,6 +31,8 @@ export function WebSocketProvider({ children }) {
   const [logFilterLevel, setLogFilterLevel] = useState(localStorage.getItem('logFilterLevel') ?? 'info');
   const [logFilterSearch, setLogFilterSearch] = useState(localStorage.getItem('logFilterSearch') ?? '*');
   const [messages, setMessages] = useState([]);
+  const [maxMessages, setMaxMessages] = useState(1000);
+  const [autoScroll, setAutoScroll] = useState(true);
   const [online, setOnline] = useState(false);
 
   // Contexts
@@ -32,7 +42,7 @@ export function WebSocketProvider({ children }) {
   const listenersRef = useRef([]);
   const wsRef = useRef(null);
   const retryCountRef = useRef(1);
-  const uniqueIdRef = useRef(Math.floor(Math.random() * (999999 - 10 + 1)) + 10);
+  const uniqueIdRef = useRef(Math.floor(Math.random() * (999999 - 1000 + 1)) + 1000);
   const pingIntervalRef = useRef(null);
   const offlineTimeoutRef = useRef(null);
   const startTimeoutRef = useRef(null);
@@ -44,7 +54,7 @@ export function WebSocketProvider({ children }) {
   const isIngress = useMemo(() => window.location.href.includes('api/hassio_ingress'), []);
 
   // Constants
-  const maxMessages = 1000;
+  // const maxMessages = 1000;
   const maxRetries = 100;
 
   const pingIntervalSeconds = 60;
@@ -60,7 +70,7 @@ export function WebSocketProvider({ children }) {
   }, [logFilterSearch]);
 
   const getUniqueId = useCallback(() => {
-    return Math.floor(Math.random() * (999999 - 10 + 1)) + 10;
+    return Math.floor(Math.random() * (999999 - 1000 + 1)) + 1000;
   }, []);
 
   const sendMessage = useCallback((message) => {
@@ -71,7 +81,6 @@ export function WebSocketProvider({ children }) {
         wsRef.current.send(msg);
         if (debug) console.log(`WebSocket sent message:`, message);
       } catch (error) {
-        // eslint-disable-next-line no-console  
         console.error(`WebSocket error sending message: ${error}`);
       }
     } else {
@@ -124,12 +133,10 @@ export function WebSocketProvider({ children }) {
           return; // Ignore messages without an ID
         } else if (msg.id === WS_ID_REFRESH_NEEDED) {
           if (debug) console.log(`WebSocket WS_ID_REFRESH_NEEDED message:`, msg, 'listeners:', listenersRef.current.length);
-          // setRefresh(true);
           listenersRef.current.forEach(listener => listener(msg)); // Notify all listeners
           return;
         } else if (msg.id === WS_ID_RESTART_NEEDED) {
           if (debug) console.log(`WebSocket WS_ID_RESTART_NEEDED message:`, msg, 'listeners:', listenersRef.current.length);
-          // setRestart(true);
           listenersRef.current.forEach(listener => listener(msg)); // Notify all listeners
           return;
         } else if (msg.id === WS_ID_CPU_UPDATE) {
@@ -142,7 +149,15 @@ export function WebSocketProvider({ children }) {
           return;
         } else if (msg.id === WS_ID_SNACKBAR) {
           if (debug) console.log(`WebSocket WS_ID_SNACKBAR message:`, msg, 'listeners:', listenersRef.current.length);
-          showSnackbarMessage(msg.params.message, msg.params.timeout);
+          showSnackbarMessage(msg.params.message, msg.params.timeout, msg.params.severity);
+          return;
+        } else if (msg.id === WS_ID_SHELLY_SYS_UPDATE) {
+          if (debug) console.log(`WebSocket WS_ID_SHELLY_SYS_UPDATE message:`, msg, 'listeners:', listenersRef.current.length);
+          listenersRef.current.forEach(listener => listener(msg)); // Notify all listeners
+          return;
+        } else if (msg.id === WS_ID_SHELLY_MAIN_UPDATE) {
+          if (debug) console.log(`WebSocket WS_ID_SHELLY_MAIN_UPDATE message:`, msg, 'listeners:', listenersRef.current.length);
+          listenersRef.current.forEach(listener => listener(msg)); // Notify all listeners
           return;
         } else if (msg.id === uniqueIdRef.current && msg.src === 'Matterbridge' && msg.dst === 'Frontend' && msg.response === 'pong') {
           if (debug) console.log(`WebSocket pong response message:`, msg, 'listeners:', listenersRef.current.length);
@@ -168,6 +183,9 @@ export function WebSocketProvider({ children }) {
         }
         if (logFilterSearchRef.current !== '*' && logFilterSearchRef.current !== '' && !msg.message.toLowerCase().includes(logFilterSearchRef.current.toLowerCase()) && !msg.name.toLowerCase().includes(logFilterSearchRef.current.toLowerCase())) return;
         // console.log(`useWebSocket afterfilter: debugLevel: '${debugLevel}'-'${msg.subType}' searchCriteria: '${searchCriteria}'`);
+
+        // Ignore uncommissioned messages
+        if(msg.name === 'Commissioning' && msg.message.includes('is uncommissioned')) return;
 
         setMessages(prevMessages => {
           // Create new array with new message
@@ -205,13 +223,12 @@ export function WebSocketProvider({ children }) {
           const newMessages = [...prevMessages, newMessage];
           // Check if the new array length exceeds the maximum allowed
           if (newMessages.length > maxMessages) {
-            // Remove the oldest messages to maintain maxMessages count
-            return newMessages.slice(newMessages.length - maxMessages);
+            // Remove 10% of the oldest messages to maintain maxMessages count
+            return newMessages.slice(maxMessages / 10);
           }
           return newMessages;
         });
       } catch (error) {
-        // eslint-disable-next-line no-console
         console.error(`WebSocketUse error parsing message: ${error}`);
       }
     };
@@ -243,6 +260,7 @@ export function WebSocketProvider({ children }) {
       console.error(`WebSocket: Disconnected from WebSocket: ${wssHost}`);
       logMessage('WebSocket', `Disconnected from WebSocket: ${wssHost}`);
       setOnline(false);
+      closeSnackbar();
       clearTimeout(startTimeoutRef.current);
       clearTimeout(offlineTimeoutRef.current);
       clearInterval(pingIntervalRef.current);
@@ -274,20 +292,30 @@ export function WebSocketProvider({ children }) {
 
   const contextMessagesValue = useMemo(() => ({
     messages,
+    maxMessages,
+    autoScroll,
     setMessages,
     setLogFilters,
-  }), [messages]);
+    setMaxMessages,
+    setAutoScroll,
+  }), [messages, setMessages, setLogFilters]);
 
   const contextValue = useMemo(() => ({
+    maxMessages,
+    autoScroll,
+    logFilterLevel,
+    logFilterSearch,
     setMessages,
     setLogFilters,
+    setMaxMessages,
+    setAutoScroll,
     online,
     getUniqueId,
     addListener,
     removeListener,
     sendMessage,
     logMessage,
-  }), [ setMessages, setLogFilters, online, addListener, removeListener, sendMessage, logMessage]);
+  }), [maxMessages, autoScroll, setMessages, setLogFilters, setMaxMessages, setAutoScroll, online, addListener, removeListener, sendMessage, logMessage]);
 
   return (
     <WebSocketMessagesContext.Provider value={contextMessagesValue}>

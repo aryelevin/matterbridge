@@ -66,6 +66,7 @@ export interface BaseRegisteredPlugin {
   started?: boolean;
   configured?: boolean;
   paired?: boolean;
+  restartRequired?: boolean;
   fabricInformations?: SanitizedExposedFabricInformation[];
   sessionInformations?: SanitizedSessionInformation[];
   registeredDevices?: number;
@@ -74,6 +75,8 @@ export interface BaseRegisteredPlugin {
   manualPairingCode?: string;
   configJson?: PlatformConfig;
   schemaJson?: PlatformSchema;
+  hasWhiteList?: boolean;
+  hasBlackList?: boolean;
 }
 
 // Define an interface for storing the system information
@@ -92,7 +95,8 @@ export interface SystemInformation {
   totalMemory: string;
   freeMemory: string;
   systemUptime: string;
-  cpuUsed: string;
+  processUptime: string;
+  cpuUsage: string;
   rss: string;
   heapTotal: string;
   heapUsed: string;
@@ -112,9 +116,13 @@ export interface MatterbridgeInformation {
   matterbridgeFabricInformations: SanitizedExposedFabricInformation[] | undefined;
   matterbridgeSessionInformations: SanitizedSessionInformation[] | undefined;
   matterbridgePaired: boolean | undefined;
+  matterbridgeAdvertise: boolean | undefined;
   bridgeMode: string;
   restartMode: string;
   readOnly: boolean;
+  shellyBoard: boolean;
+  shellySysUpdate: boolean;
+  shellyMainUpdate: boolean;
   profile?: string;
   loggerLevel: LogLevel;
   fileLogger: boolean;
@@ -127,7 +135,7 @@ export interface MatterbridgeInformation {
   matterDiscriminator: number | undefined;
   matterPasscode: number | undefined;
   restartRequired: boolean;
-  refreshRequired: boolean;
+  updateRequired: boolean;
 }
 
 export interface SanitizedExposedFabricInformation {
@@ -173,6 +181,7 @@ export interface ApiDevices {
   productUrl: string;
   configUrl?: string;
   uniqueId: string;
+  reachable: boolean;
   cluster: string;
 }
 

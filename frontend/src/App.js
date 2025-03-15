@@ -21,8 +21,11 @@ import { WebSocketProvider } from './components/WebSocketProvider';
 import { UiProvider } from './components/UiProvider';
 import { createMuiTheme, getCssVariable } from './components/muiTheme';
 
-export const debug = false;
+export var debug = false;
 
+export const toggleDebug = () => {
+  debug = !debug;
+}
 // Create a context for the authentication state
 const AuthContext = createContext();
 
@@ -108,22 +111,23 @@ function LoginForm() {
   
   // Set the frontned theme in document.body
   useEffect(() => {
-    // console.log('Setting frontend theme');
+    if(debug) console.log('Setting frontend theme');
     const savedTheme = localStorage.getItem('frontendTheme');
-    // console.log('Saved theme:', savedTheme);
+    if(debug)  console.log('Saved theme:', savedTheme);
     if (savedTheme) {
       document.body.setAttribute("frontend-theme", savedTheme); // Set the saved theme
     } else {
       document.body.setAttribute("frontend-theme", "dark"); // Set the default theme to dark
     }
     const primaryColorFromCSS = getCssVariable('--primary-color', '#1976d2');
-    // console.log('Primary color from CSS:', primaryColorFromCSS);
+    if(debug)  console.log('Primary color from CSS:', primaryColorFromCSS);
     setPrimaryColor(primaryColorFromCSS);
   }, []);
 
-  const baseName = window.location.href.includes("/matterbridge/") ? "/matterbridge" :
+  const baseName = window.location.pathname.includes("/matterbridge/") ? "/matterbridge" :
   window.location.href.includes("/api/hassio_ingress/") ? window.location.pathname :
   "/";
+  console.log(`Loading App.js with href="${window.location.href}" and pathname="${window.location.pathname}" >>> baseName="${baseName}"`);
   // console.log(`Ingress check: window.location.href=${window.location.href} baseName=${baseName}`);
   // Ingress check: window.location.href=http://homeassistant.local:8123/api/hassio_ingress/nD0C1__RqgwrZT_UdHObtcPNN7fCFxCjlmPQfCzVKI8/ baseName=/api/hassio_ingress/nD0C1__RqgwrZT_UdHObtcPNN7fCFxCjlmPQfCzVKI8/
 
@@ -134,7 +138,7 @@ function LoginForm() {
   if (loggedIn) {
     return (
       <ThemeProvider theme={theme}>
-        <SnackbarProvider maxSnack={5} preventDuplicate anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}>
+        <SnackbarProvider maxSnack={10} preventDuplicate anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}>
           <UiProvider>
             <WebSocketProvider>
               <Router basename={baseName}>
@@ -160,7 +164,7 @@ function LoginForm() {
       <div style={containerStyle}>
         <form onSubmit={handleSubmit} style={formStyle}>
           <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '20px' }}>
-            <img src="matterbridge 64x64.png" alt="Matterbridge Logo" style={{ height: '64px', width: '64px' }} />
+            <img src="matterbridge.svg" alt="Matterbridge Logo" style={{ height: '64px', width: '64px' }} />
             <h3 style={{color: 'var(--div-text-color)' }}>Welcome to Matterbridge</h3>
           </div>
           <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: '20px' }}>
